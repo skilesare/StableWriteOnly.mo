@@ -24,9 +24,9 @@ public shared func test() : async {
         let suite = S.suite(
             "memory",
             [
-              //S.test("testUpgrade", switch(await testUpgrade()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
-              //S.test("testSwap", switch(await testSwap()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
-              //S.test("testStableIndex", switch(await testStableIndex()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
+              S.test("testUpgrade", switch(await testUpgrade()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
+              S.test("testSwap", switch(await testSwap()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
+              S.test("testStableIndex", switch(await testStableIndex()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
 
               S.test("testStableTypedIndex", switch(await testStableTypedIndex()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
 

@@ -42,9 +42,9 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
   };
 
   public query func read(x : Nat) : async ?TestType1 {
-    //D.print("about to read block");
+    D.print("about to read block" # debug_show(x, mem.read(x)));
     let val = from_candid(mem.read(x)) : ?TestType1;
-    //D.print(" block " # debug_show(val));
+    D.print(" block " # debug_show(val));
     return val;
   };
 
@@ -98,6 +98,10 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
 
       };
       case(?val) val;
+    };
+
+    for(thisItem in Vec.vals<TestType1>(data)){
+      ignore mem.write(to_candid(thisItem));
     };
 
     return mem.stats();

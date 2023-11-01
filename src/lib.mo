@@ -108,16 +108,13 @@ module {
       #Stable : {
         var indexRegion : RegionLib.Region;
         var count : Nat64;
-        var currentPages : Nat64;
       };
       #StableTyped : {
         var indexRegion : RegionLib.Region;
         var count : Nat64;
-        var currentPages: Nat64;
       };
     };
     var maxPages: Nat64;
-    var currentPages: Nat64;
     var currentOffset: Nat64;
   };
 
@@ -226,11 +223,11 @@ module {
 
       //D.print("newItemSize, newOffset, lastOffset, item"  # debug_show(newItemSize, newOffset, lastOffset, item));
 
-      if(newOffset > store.currentPages * 65536){
+      if(newOffset > RegionLib.size(store.region) * 65536){
         //grow the main memory
         
         let neededPages = ((Nat64.sub(newOffset,store.currentOffset)) / KiB) + 1;
-        if(neededPages + store.currentPages > store.maxPages) return #err(#MemoryFull);
+        if(neededPages + RegionLib.size(store.region) > store.maxPages) return #err(#MemoryFull);
        
         let beforeSize = RegionLib.grow(store.region, neededPages);
        
@@ -238,7 +235,6 @@ module {
           D.print("memory full " # debug_show(beforeSize) );
           return #err(#MemoryFull);
         };
-        store.currentPages += neededPages;
       };
 
       let thisOffSetInfo = {
@@ -259,15 +255,13 @@ module {
         };
         case(#Stable(items)){
           let newIndex = (items.count * elem_size) + elem_size;
-          if(newIndex > items.currentPages * KiB){
+          if(newIndex > RegionLib.size(items.indexRegion) * KiB){
             //grow the index
             let beforeSize = RegionLib.grow(items.indexRegion, 1);
             if (beforeSize == 0xFFFF_FFFF_FFFF_FFFF) {
               D.print("index full stable" # debug_show(beforeSize) );
               return #err(#IndexFull);
             };
-            items.currentPages += 1;
-            
           };
 
           RegionLib.storeNat64(items.indexRegion, items.count * elem_size + 0, lastOffset);
@@ -282,7 +276,7 @@ module {
           let ?this_type_of = type_of else return #err(#TypeRequired);
           let newIndex = (items.count * elem_size_typed) + elem_size_typed; 
           
-          if(newIndex > items.currentPages * KiB){
+          if(newIndex > RegionLib.size(items.indexRegion) * KiB){
             //grow the index
             let beforeSize = RegionLib.grow(items.indexRegion, 1);
            
@@ -290,7 +284,6 @@ module {
               D.print("index full stable typed" # debug_show(beforeSize) );
               return #err(#IndexFull);
             };
-            items.currentPages += 1;
           };
 
 
@@ -404,7 +397,7 @@ module {
           };
         };
         maxPages = store.maxPages;
-        currentPages = store.currentPages;
+        currentPages = RegionLib.size(store.region);
         currentOffset = store.currentOffset;
         memory = switch(store.items){
           case(#Managed(items)){
@@ -416,13 +409,13 @@ module {
           case(#Stable(items)){
             {
               type_of = #Stable;
-              pages = ?items.currentPages
+              pages = ?RegionLib.size(items.indexRegion)
             };
           };
           case(#StableTyped(items)){
             {
               type_of = #StableTyped;
-              pages = ?items.currentPages
+              pages = ?RegionLib.size(items.indexRegion)
             };
           };
         };

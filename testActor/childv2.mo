@@ -67,7 +67,7 @@ shared(init_msg) actor class Child2() = this {
     
 
     for(thisItem in Vec.vals<TestType1>(data)){
-      ignore mem.write(to_candid(x));
+      ignore mem.write(to_candid(thisItem));
     };
     return mem.stats();
   };
