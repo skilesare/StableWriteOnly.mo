@@ -3,7 +3,7 @@ name = "stable-write-only"
 version = "0.1.1"
 description = "Manages a write-only stable memory stream"
 repository = "https://github.com/skilesare/StableWriteOnly.mo"
-keywords = [ "Stable", "Memory" ]
+keywords = [ "stable", "memory" ]
 license = "MIT"
 
 [dependencies]
