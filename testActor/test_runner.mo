@@ -1,5 +1,6 @@
 import Array "mo:base/Array";
 import D "mo:base/Debug";
+import Error "mo:base/Error";
 import Principal "mo:base/Principal";
 import C "mo:matchers/Canister";
 import M "mo:matchers/Matchers";
@@ -10,7 +11,7 @@ import Child1 "childv1";
 import Child2 "childv2";
 
 
-shared(init_msg) actor class() = this {
+shared(init_msg) persistent actor class() = this {
 
 
 
@@ -29,6 +30,8 @@ public shared func test() : async {
               S.test("testStableIndex", switch(await testStableIndex()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
 
               S.test("testStableTypedIndex", switch(await testStableTypedIndex()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
+
+              S.test("testStableMemoryComparison", switch(await testStableMemoryComparison()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
 
               // Unfortunately the big data test stalls out in the local replica. Will need to be run in prod with a similiar schema to load in > 4GB of data.
               //S.test("testBigData", switch(await testBigData()){case(#success){true};case(_){false};}, M.equals<Bool>(T.bool(true))),
@@ -462,108 +465,218 @@ public shared func test() : async {
     };
 
     public shared func testBigData() : async { #success; #fail : Text } {
-        
-        //create a bucket canister
-        D.print("testing BigData");
+        try{
+          //create a bucket canister
+          D.print("testing BigData");
 
-        let childv1 = await Child1.Child1(null);
+          // Use #Stable mode to keep index in stable memory instead of Wasm heap
+          let childv1 = await Child1.Child1(?#Stable);
 
-        D.print("have canister " # debug_show(Principal.fromActor(childv1)));
+          D.print("have canister " # debug_show(Principal.fromActor(childv1)));
 
-        //update max beyond reasonable limit
-        let maxPagesResponse= await childv1.updateMaxPages(62501); //should be one more than default
+          //update max beyond reasonable limit
+          let maxPagesResponse= await childv1.updateMaxPages(62501); //should be one more than default
 
-        //load it with data
-        var tracker = 0;
-        
-        label repeater loop{
-          let dataResponseFill = await childv1.putLotsOfData(2000000);
-          let dataResponseFill2 = await childv1.putLotsOfData(2000000);
-          let dataResponseFill3 = await childv1.putLotsOfData(2000000);
-          let dataResponseFill4 = await childv1.putLotsOfData(2000000);
-          let dataResponseFill5 = await childv1.putLotsOfData(2000000);
+          //load it with data
+          var tracker = 0;
+          
+          label repeater loop{
+            let dataResponseFill = await childv1.putLotsOfData(2000000);
+            let dataResponseFill2 = await childv1.putLotsOfData(2000000);
+            let dataResponseFill3 = await childv1.putLotsOfData(2000000);
+            let dataResponseFill4 = await childv1.putLotsOfData(2000000);
+            let dataResponseFill5 = await childv1.putLotsOfData(2000000);
 
-          D.print("finished loop " # debug_show(tracker));
+            D.print("finished loop " # debug_show(tracker));
 
-          tracker += 1;
-          if(tracker >= 11) break repeater;
+            tracker += 1;
+            if(tracker >= 11) break repeater;
+          };
+          
+
+          //D.print("data was put " # debug_show(dataResponseFill));
+
+          //check that the memory endured
+          //D.print("reading preResponse2 " # debug_show(dataResponse));
+          let ?preResponse2 = await childv1.read(0) else D.trap("bad read preResponse2");
+          //D.print("reading preResponse3 " # debug_show(dataResponse));
+          let ?preResponse3 = await childv1.read(999) else D.trap("bad read preResponse3");
+
+          D.print("data was " # debug_show(preResponse2, preResponse3));
+
+          let preResponse4 = await childv1.putData({
+            one = 55;
+            two = "test55";
+            three = 55 : Nat64;
+          }) else D.trap("bad read preResponse4");
+
+          //upgrade it
+
+          let childv2 = await (system Child2.Child2)(#upgrade childv1)();
+
+          D.print("upgrade finished " # debug_show(Principal.fromActor(childv2)));
+
+
+          //check that the memory endured
+          let ?dataResponse2 = await childv1.read(0) else D.trap("bad read dataResponse2");
+          let ?dataResponse3 = await childv1.read(999) else D.trap("bad read dataResponse3");
+          D.print("data was " # debug_show(dataResponse2, dataResponse3));
+
+          let finalStats = await childv1.stats() else D.trap("bad read finalStats");
+          D.print("stats were " # debug_show(finalStats));
+
+
+          //test responses
+
+          let suite = S.suite(
+              "test upgrade",
+              [
+
+                  
+                  
+                  S.test(
+                      "fail if can't read memory",
+                      preResponse2.one,
+                      M.equals<Nat>(T.nat(0)),
+                  ), 
+                  S.test(
+                      "fail if can't read whole memeory",
+                      preResponse3.one,
+                      M.equals<Nat>(T.nat(999)),
+                  ), 
+                  S.test(
+                      "fail if can't read memory after upgrade",
+                      dataResponse2.one,
+                      M.equals<Nat>(T.nat(0)),
+                  ), 
+                  S.test(
+                      "fail if can't read whole memory after upgrade",
+                      dataResponse3.one,
+                      M.equals<Nat>(T.nat(999)),
+                  ), 
+                  S.test(
+                      "fail if writing data doesn't return full memory",
+                      switch(preResponse4){
+                        case(#err(#MemoryFull)) "correct response";
+                        case(#err(#IndexFull)) "correct response";
+                        case(_) "wrong response" # debug_show(preResponse4);
+                      },
+                      M.equals<Text>(T.text("correct response")),
+                  ), 
+                
+
+              ],
+          );
+
+          
+
+          S.run(suite);
+        } catch (e){
+          D.print("error occured " # Error.message(e));
+          return #fail(Error.message(e));
         };
-        
 
-        //D.print("data was put " # debug_show(dataResponseFill));
+        return #success;
+    };
 
-        //check that the memory endured
-        //D.print("reading preResponse2 " # debug_show(dataResponse));
-        let ?preResponse2 = await childv1.read(0) else D.trap("bad read preResponse2");
-        //D.print("reading preResponse3 " # debug_show(dataResponse));
-        let ?preResponse3 = await childv1.read(999) else D.trap("bad read preResponse3");
+    /// Test that region-based stable memory calculation produces reasonable results
+    /// compared to IC stable memory size
+    public shared func testStableMemoryComparison() : async { #success; #fail : Text } {
+        D.print("testing StableMemoryComparison");
 
-        D.print("data was " # debug_show(preResponse2, preResponse3));
+        // Test with #Stable mode (has separate index region)
+        let childStable = await Child1.Child1(?#Stable);
 
-        let preResponse4 = await childv1.putData({
-          one = 55;
-          two = "test55";
-          three = 55 : Nat64;
-        }) else D.trap("bad read preResponse4");
+        // Add some data
+        for(i in [1, 2, 3, 4, 5].vals()){
+          ignore await childStable.putData({
+            one = i;
+            two = "test" # debug_show(i);
+            three = 15;
+          });
+        };
 
-        //upgrade it
+        let comparisonStable = await childStable.stableMemoryComparison();
+        D.print("Stable mode comparison: " # debug_show(comparisonStable));
 
-        let childv2 = await (system Child2.Child2)(#upgrade childv1)();
+        // Test with #Managed mode (no index region)
+        let childManaged = await Child1.Child1(?#Managed);
 
-        D.print("upgrade finished " # debug_show(Principal.fromActor(childv2)));
+        // Add some data
+        for(i in [1, 2, 3, 4, 5].vals()){
+          ignore await childManaged.putData({
+            one = i;
+            two = "test" # debug_show(i);
+            three = 15;
+          });
+        };
 
+        let comparisonManaged = await childManaged.stableMemoryComparison();
+        D.print("Managed mode comparison: " # debug_show(comparisonManaged));
 
-        //check that the memory endured
-        let ?dataResponse2 = await childv1.read(0) else D.trap("bad read dataResponse2");
-        let ?dataResponse3 = await childv1.read(999) else D.trap("bad read dataResponse3");
-        D.print("data was " # debug_show(dataResponse2, dataResponse3));
+        // Test with #StableTyped mode
+        let childTyped = await Child1.Child1(?#StableTyped);
 
-        let finalStats = await childv1.stats() else D.trap("bad read finalStats");
-        D.print("stats were " # debug_show(finalStats));
+        // Add some typed data using putLotsOfTypedData
+        ignore await childTyped.putLotsOfTypedData(5);
 
-
-        //test responses
+        let comparisonTyped = await childTyped.stableMemoryComparison();
+        D.print("StableTyped mode comparison: " # debug_show(comparisonTyped));
 
         let suite = S.suite(
-            "test upgrade",
+            "test stable memory comparison",
             [
+                // For #Stable mode: region-based should include both data and index pages
+                S.test(
+                    "Stable mode: regionBasedPages should be > 0",
+                    comparisonStable.regionBasedPages > 0,
+                    M.equals<Bool>(T.bool(true)),
+                ),
+                S.test(
+                    "Stable mode: dataPages should be > 0",
+                    comparisonStable.dataPages > 0,
+                    M.equals<Bool>(T.bool(true)),
+                ),
+                S.test(
+                    "Stable mode: indexPages should be > 0 for #Stable",
+                    comparisonStable.indexPages > 0,
+                    M.equals<Bool>(T.bool(true)),
+                ),
+                S.test(
+                    "Stable mode: regionBasedPages should equal dataPages + indexPages",
+                    comparisonStable.regionBasedPages == comparisonStable.dataPages + comparisonStable.indexPages,
+                    M.equals<Bool>(T.bool(true)),
+                ),
+                // NOTE: Prim.stableMemorySize() returns legacy stable memory, NOT region memory.
+                // Region memory is allocated from a separate internal pool managed by the runtime.
+                // So icStableMemoryPages will typically be 0 when only using Region API.
+                // This test verifies that behavior - region-based stats are the correct measure.
+                S.test(
+                    "Stable mode: icStableMemoryPages is separate from region memory (typically 0)",
+                    comparisonStable.icStableMemoryPages == 0,
+                    M.equals<Bool>(T.bool(true)),
+                ),
 
-                
-                
+                // For #Managed mode: no index region, so indexPages should be 0
                 S.test(
-                    "fail if can't read memory",
-                    preResponse2.one,
-                    M.equals<Nat>(T.nat(0)),
-                ), 
+                    "Managed mode: indexPages should be 0",
+                    comparisonManaged.indexPages == 0,
+                    M.equals<Bool>(T.bool(true)),
+                ),
                 S.test(
-                    "fail if can't read whole memeory",
-                    preResponse3.one,
-                    M.equals<Nat>(T.nat(999)),
-                ), 
-                S.test(
-                    "fail if can't read memory after upgrade",
-                    dataResponse2.one,
-                    M.equals<Nat>(T.nat(0)),
-                ), 
-                 S.test(
-                    "fail if can't read whole memory after upgrade",
-                    dataResponse3.one,
-                    M.equals<Nat>(T.nat(999)),
-                ), 
-                S.test(
-                    "fail if writing data doesn't return full memory",
-                    switch(preResponse4){
-                      case(#err(#MemoryFull)) "correct response";
-                      case(_) "wrong response" # debug_show(preResponse4);
-                    },
-                    M.equals<Text>(T.text("correct response")),
-                ), 
-               
+                    "Managed mode: regionBasedPages should equal dataPages",
+                    comparisonManaged.regionBasedPages == comparisonManaged.dataPages,
+                    M.equals<Bool>(T.bool(true)),
+                ),
 
+                // For #StableTyped mode: should also have index pages
+                S.test(
+                    "StableTyped mode: indexPages should be > 0",
+                    comparisonTyped.indexPages > 0,
+                    M.equals<Bool>(T.bool(true)),
+                ),
             ],
         );
-
-        
 
         S.run(suite);
 
