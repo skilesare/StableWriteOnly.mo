@@ -1,12 +1,12 @@
 /// A straight line, write only data store designed for icrc3 style ledger archives
 /// but useful for other situations.
 /// 
-/// This library uses the Motoko Stable Region base library under the hood to simplfy
+/// This library uses the Motoko Stable Region base library under the hood to simplify
 /// the writing of data to a canister that is not expected to change over time.
 ///
-/// Memory is allocated auto allocated as objects are written to the stream.  
-/// A max pages(in KiB - 65536 per KiB is provided) and defaults to 62500 worth of pages. (4096000000 bytes)
-/// More are suppored. Please see the Region.mo file in motoko-base for compiler level flags
+/// Memory is auto allocated as objects are written to the stream.  
+/// A max pages (in 64KiB increments - 65536 bytes per page) is provided and defaults to 62500 pages (4096000000 bytes).
+/// More are supported. Please see the Region.mo file in motoko-base for compiler level flags
 /// that allow for larger regions.
 ///
 /// Installation:
@@ -17,11 +17,11 @@
 ///
 /// Usage:
 /// ```motoko no-repl
-/// import SW "mo:table-write-only";
+/// import SW "mo:stable-write-only";
 /// ```
 ///
 /// This Module uses the Class+ pattern discussed at https://forum.dfinity.org/t/writing-motoko-stable-libraries/21201
-/// It is stable and does not require memory managment.
+/// It is stable and does not require memory management.
 ///
 /// ```
 ///  stable var memStore = SW.init({
@@ -32,7 +32,8 @@
 ///  let mem = SW.StableWriteOnly(?memStore);
 /// ```
 ///
-/// Memory is swappable if you end up in a situation where your obects need to be upgraded
+/// Memory is swappable if you end up in a situation where your objects need to be upgraded
+
 ///
 /// ```
 ///    let newMem = SW.init({maxPages = 32; indexType=#Managed});
@@ -47,16 +48,17 @@
 ///    let result = sw.write(to_candid(replaceItem));
 ///
 ///    return oldmem.swap(sw.toSwappable());
+/// ```
 ///
 /// Three different types of memory are offered:
 ///     #Managed - item info is stored in the managed vector and is streamed in and out of 
 ///         memory. This means your index will eventually overrun its ability to be upgraded 
-///         by the standard motoko upgrade process. (Althoug depending on your other data you 
+///         by the standard motoko upgrade process. (Although depending on your other data you 
 ///         may be able to get up to 100M entries)
 ///     #Stable and #StableTyped - these keep their indexes in another region of stable memory.
 ///         stable indexes use two less bytes than stable typed as they are unable to track type info
 ///
-/// For Managed and StableTyped memoreis the library also keeps track of types such that one can tag each write with a
+/// For Managed and StableTyped memories the library also keeps track of types such that one can tag each write with a
 /// type annotation without the library needing to know your types ahead of type. You will need
 /// to provide your own type parser.
 ///
@@ -83,13 +85,13 @@
 /// The Stable and StableTyped memories are based on Matt Hammer's work at https://github.com/dfinity/motoko/blob/master/doc/md/examples/StableMultiLog.mo
 
 
-import RegionLib "mo:base/Region";
-import D "mo:base/Debug";
-import Nat "mo:base/Nat";
-import Nat64 "mo:base/Nat64";
-import Nat16 "mo:base/Nat16";
-import Result "mo:base/Result";
-import Vec "mo:vector";
+import RegionLib "mo:core/Region";
+import D "mo:core/Debug";
+import Nat "mo:core/Nat";
+import Nat64 "mo:core/Nat64";
+import Nat16 "mo:core/Nat16";
+import Result "mo:core/Result";
+import List "mo:core/List";
 
 module {
   
@@ -104,7 +106,7 @@ module {
   public type Region = { 
     var region: RegionLib.Region;
     items : {
-      #Managed : Vec.Vector<OffsetInfo>;
+      #Managed : List.List<OffsetInfo>;
       #Stable : {
         var indexRegion : RegionLib.Region;
         var count : Nat64;
@@ -170,25 +172,22 @@ module {
       var region = RegionLib.new();
       items = switch(args.indexType){
         case(#Managed){
-          #Managed(Vec.new<OffsetInfo>());
+          #Managed(List.empty<OffsetInfo>());
         };
         case(#Stable){
           #Stable({
             var indexRegion = RegionLib.new();
             var count = 0;
-            var currentPages = 0;
           });
         };
         case(#StableTyped){
            #StableTyped({
             var indexRegion = RegionLib.new();
             var count = 0;
-            var currentPages = 0;
           });
         };
       };
       var maxPages = args.maxPages;
-      var currentPages = 0;
       var currentOffset = 0;
     }: Region;
   };
@@ -237,7 +236,7 @@ module {
         };
       };
 
-      let thisOffSetInfo = {
+      let _thisOffSetInfo = {
         offset = lastOffset;
         size = Nat64.toNat(newItemSize);
       };
@@ -245,13 +244,13 @@ module {
       //D.print("setting item offset " # debug_show(thisOffSetInfo, Vec.size(store.items)) );
       let new_index = switch(store.items){
         case(#Managed(items)){
-          Vec.add<OffsetInfo>(items, {
+          List.add<OffsetInfo>(items, {
             offset = lastOffset;
             size = Nat64.toNat(newItemSize);
             type_of = type_of;
           });
 
-          Nat.sub(Vec.size(items),1);
+          Nat.sub(List.size(items),1);
         };
         case(#Stable(items)){
           let newIndex = (items.count * elem_size) + elem_size;
@@ -301,12 +300,25 @@ module {
       return #ok(new_index);
     };
 
+    /// Returns the number of items stored
+    public func count() : Nat {
+      switch(store.items) {
+        case(#Managed(items)) List.size(items);
+        case(#Stable(items)) Nat64.toNat(items.count);
+        case(#StableTyped(items)) Nat64.toNat(items.count);
+      };
+    };
+
     /// read a blob stored at the provided index
-    public func read(x : Nat) : Blob {
+    /// Returns null if the index is out of bounds
+    public func read(x : Nat) : ?Blob {
+      // Bounds check
+      if (x >= count()) return null;
+
       let x64 = Nat64.fromNat(x);
       let (offset, size) : (Nat64, Nat) = switch(store.items){
         case(#Managed(items)){
-          let item = Vec.get<OffsetInfo>(items, x);
+          let item = List.at<OffsetInfo>(items, x);
           (item.offset, item.size);
         };
         case(#Stable(items)){
@@ -323,16 +335,20 @@ module {
       
       let bytes = RegionLib.loadBlob(store.region, offset, size);
 
-      return bytes;
+      return ?bytes;
     };
 
     /// Read the blob and provide the type information if available
-    public func readTyped(x : Nat) : (Blob, ?Nat) {
+    /// Returns null if the index is out of bounds
+    public func readTyped(x : Nat) : ?(Blob, ?Nat) {
+      // Bounds check
+      if (x >= count()) return null;
+
       D.print("reading block in lib typed" # debug_show(x));
       let x64 = Nat64.fromNat(x);
       let (offset, size, type_of) : (Nat64, Nat, ?Nat) = switch(store.items){
         case(#Managed(items)){
-          let item = Vec.get<OffsetInfo>(items, x);
+          let item = List.at<OffsetInfo>(items, x);
           (item.offset, item.size, item.type_of);
         };
         case(#Stable(items)){
@@ -353,7 +369,7 @@ module {
       //D.print("reading block in lib " # debug_show(x, itemOffset));
       let bytes = RegionLib.loadBlob(store.region, offset, size);
       //D.print("found bytes " # debug_show(x, bytes));
-      return (bytes, type_of);
+      return ?(bytes, type_of);
     };
 
     /// Update the max pages a memory can handle
@@ -387,7 +403,7 @@ module {
         };
         itemCount = switch(store.items){
           case(#Managed(items)){
-            Vec.size(items);
+            List.size(items);
           };
           case(#Stable(items)){
             Nat64.toNat(items.count);
@@ -400,7 +416,7 @@ module {
         currentPages = RegionLib.size(store.region);
         currentOffset = store.currentOffset;
         memory = switch(store.items){
-          case(#Managed(items)){
+          case(#Managed(_items)){
             {
               type_of = #Managed;
               pages = null

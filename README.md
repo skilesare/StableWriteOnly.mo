@@ -8,8 +8,8 @@
  This library uses the Motoko Stable Region base library under the hood to simplify
  the writing of data to a canister that is not expected to change over time.
 
- Memory is allocated auto allocated as objects are written to the stream.  
- A max pages(in KiB - 65536 per KiB is provided) and defaults to 62500 worth of pages. (4096000000 bytes)
+ Memory is auto allocated as objects are written to the stream.  
+ A max pages (in 64KiB increments - 65536 bytes per page) is provided and defaults to 62500 pages (4096000000 bytes).
  
  More are supported. Please see the Region.mo file in motoko-base for compiler level flags
  that allow for larger regions.
@@ -23,7 +23,7 @@
  ## Usage:
 
  ```motoko no-repl
- import SW "mo:table-write-only";
+ import SW "mo:stable-write-only";
  ```
 
  This Module uses the Class+ pattern discussed at https://forum.dfinity.org/t/writing-motoko-stable-libraries/21201
@@ -53,16 +53,17 @@
     let result = sw.write(to_candid(replaceItem));
 
     return oldmem.swap(sw.toSwappable());
+ ```
 
  Three different types of memory are offered:
      #Managed - item info is stored in the managed vector and is streamed in and out of 
          memory. This means your index will eventually overrun its ability to be upgraded 
-         by the standard motoko upgrade process. (Althoug depending on your other data you 
+         by the standard motoko upgrade process. (Although depending on your other data you 
          may be able to get up to 100M entries)
      #Stable and #StableTyped - these keep their indexes in another region of stable memory.
          stable indexes use two less bytes than stable typed as they are unable to track type info
 
- For Managed and StableTyped memoreis the library also keeps track of types such that one can tag each write with a
+ For Managed and StableTyped memories the library also keeps track of types such that one can tag each write with a
  type annotation without the library needing to know your types ahead of type. You will need
  to provide your own type parser.
 
@@ -96,7 +97,7 @@
 
  ```
  //terminal 1
- dfx start --clean --artificial-delay 
+ dfx start --clean --background
 
  //terminal 2
  dfx deploy test_runner

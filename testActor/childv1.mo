@@ -1,11 +1,13 @@
-import Array "mo:base/Array";
-import D "mo:base/Debug";
-import Vec "mo:vector";
+import D "mo:core/Debug";
+import List "mo:core/List";
+import Nat "mo:core/Nat";
+import Nat64 "mo:core/Nat64";
+import Prim "mo:⛔";
 import SW "../src/";
 
-shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
+shared(init_msg) persistent actor class Child1(_args : ?SW.IndexType) = this {
 
-  var args = _args;
+  transient var args = _args;
 
   public type TestType1 = {
     one: Nat;
@@ -35,7 +37,7 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
     };
   });
 
-  let mem = SW.StableWriteOnly(?memStore);
+  transient let mem = SW.StableWriteOnly(?memStore);
 
   public query func stats() : async SW.Stats{
     mem.stats();
@@ -43,7 +45,8 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
 
   public query func read(x : Nat) : async ?TestType1 {
     D.print("about to read block" # debug_show(x, mem.read(x)));
-    let val = from_candid(mem.read(x)) : ?TestType1;
+    let ?blob = mem.read(x) else return null;
+    let val = from_candid(blob) : ?TestType1;
     D.print(" block " # debug_show(val));
     return val;
   };
@@ -69,39 +72,51 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
     return mem.write(to_candid(x));
   };
 
-  var dataBlock : ?Vec.Vector<TestType1> = null;
+  transient var dataBlock : ?List.List<TestType1> = null;
 
-  var dataBlock2: ?Vec.Vector<VecTypes> = null;
+  transient var dataBlock2: ?List.List<VecTypes> = null;
+
+  // Batch size to avoid exceeding instruction limit per message
+  let BATCH_SIZE = 50_000;
 
   public shared func putLotsOfData(x : Nat) : async SW.Stats {
-    let data = switch(dataBlock){
-      case(null){
-        let buf : Vec.Vector<TestType1> = Vec.new<TestType1>();
-        var tracker = 0;
-        //D.print("about to write block");
-        label proc loop{
-          if(tracker % 100000 == 0) D.print("processing data " # debug_show(tracker));
-          Vec.add<TestType1>(buf, {
-            one = tracker : Nat;
-            two = "test";
-            three = 15;
-          } : TestType1);
-          if(tracker % 100000 == 0) D.print("data size " # debug_show(Vec.size(buf)));
-          
+    // Process in batches to avoid exceeding instruction limit
+    await putLotsOfDataBatch(x, 0);
+  };
 
-          tracker := tracker + 1;
-          if(tracker >= x){break proc};
-          if(tracker % 100000 == 0) D.print("new tracker size " # debug_show(Vec.size(buf)));
-        };
-        dataBlock := ?buf;
-        buf;
-
+  private func putLotsOfDataBatch(total : Nat, startFrom : Nat) : async SW.Stats {
+    // Write directly to stable memory without caching in Wasm heap
+    var tracker = startFrom;
+    let batchEnd = Nat.min(startFrom + BATCH_SIZE, total);
+    
+    if(tracker % 100000 == 0 or tracker == startFrom) D.print("processing data " # debug_show(tracker));
+    
+    label proc loop{
+      let item : TestType1 = {
+        one = tracker : Nat;
+        two = "test";
+        three = 15;
       };
-      case(?val) val;
+      let result = mem.write(to_candid(item));
+      switch(result){
+        case(#err(#MemoryFull)){
+          D.print("memory full at " # debug_show(tracker));
+          return mem.stats();
+        };
+        case(#err(#IndexFull)){
+          D.print("index full at " # debug_show(tracker));
+          return mem.stats();
+        };
+        case(_){};
+      };
+      
+      tracker := tracker + 1;
+      if(tracker >= batchEnd){break proc};
     };
 
-    for(thisItem in Vec.vals<TestType1>(data)){
-      ignore mem.write(to_candid(thisItem));
+    // If more to process, yield and continue with next batch
+    if(tracker < total){
+      return await putLotsOfDataBatch(total, tracker);
     };
 
     return mem.stats();
@@ -109,24 +124,25 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
 
   public query func readTyped(x : Nat) : async ?VecTypes {
     D.print("about to read block type");
-    let val = mem.readTyped(x);
-    let ?type_of = val.1;
-
-    if(type_of == 0){
-      return ?#TestType1(
-        switch(from_candid(val.0) : ?TestType1){
-          case(null) return null;
-          case(?val) val;
-        });
-    } else {
-      return ?#TestType3(
-        switch(from_candid(val.0) : ?TestType3){
-          case(null) return null;
-          case(?val) val;
-        });
+    let ?val = mem.readTyped(x) else return null;
+    switch(val.1){
+      case(null) return null;
+      case(?type_of){
+        if(type_of == 0){
+          return ?#TestType1(
+            switch(from_candid(val.0) : ?TestType1){
+              case(null) return null;
+              case(?v) v;
+            });
+        } else {
+          return ?#TestType3(
+            switch(from_candid(val.0) : ?TestType3){
+              case(null) return null;
+              case(?v) v;
+            });
+        };
+      };
     };
-    
-
   };
 
 
@@ -134,12 +150,12 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
   public shared func putLotsOfTypedData(x : Nat) : async SW.Stats {
     let data = switch(dataBlock2){
       case(null){
-        let buf : Vec.Vector<VecTypes> = Vec.new<VecTypes>();
+        let buf : List.List<VecTypes> = List.empty<VecTypes>();
         var tracker = 0;
         //D.print("about to write block");
         label proc loop{
           if(tracker % 100000 == 0) D.print("processing data " # debug_show(tracker));
-          Vec.add<VecTypes>(buf, if(tracker % 2 == 0){
+          List.add<VecTypes>(buf, if(tracker % 2 == 0){
                 #TestType1({
                 one = tracker : Nat;
                 two = "test";
@@ -147,18 +163,17 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
               } : TestType1)} else {
                 #TestType3({
                 five = #six;
-                eight = "test8";
               })
             }
           
           );
         
-          if(tracker % 100000 == 0) D.print("data size " # debug_show(Vec.size(buf)));
+          if(tracker % 100000 == 0) D.print("data size " # debug_show(List.size(buf)));
           
 
           tracker := tracker + 1;
           if(tracker >= x){break proc};
-          if(tracker % 100000 == 0) D.print("new tracker size " # debug_show(Vec.size(buf)));
+          if(tracker % 100000 == 0) D.print("new tracker size " # debug_show(List.size(buf)));
         };
         dataBlock2 := ?buf;
         buf;
@@ -168,7 +183,7 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
     };
 
     var write_tracker = 0;
-    label write for(thisItem in Vec.vals<VecTypes>(data)){
+    label write for(thisItem in List.values<VecTypes>(data)){
       if(write_tracker % 100000 ==0) D.print("writing data " # debug_show(write_tracker));
 
       switch(thisItem){
@@ -218,5 +233,30 @@ shared(init_msg) actor class Child1(_args : ?SW.IndexType) = this {
   public shared func updateMaxPages(x : Nat64) : async SW.Stats {
     mem.updateMaxPages(x);
     return mem.stats();
+  };
+
+  /// Compare IC stable memory size with region-based calculation
+  /// Returns: (icStableMemoryPages, regionBasedPages, dataPages, indexPages)
+  public query func stableMemoryComparison() : async {
+    icStableMemoryPages: Nat;
+    regionBasedPages: Nat;
+    dataPages: Nat;
+    indexPages: Nat;
+  } {
+    let stats = mem.stats();
+    let dataPages = Nat64.toNat(stats.currentPages);
+    let indexPages = switch(stats.memory.pages) {
+      case(?p) Nat64.toNat(p);
+      case(null) 0;
+    };
+    let regionBasedPages = dataPages + indexPages;
+    let icStableMemoryPages = Nat64.toNat(Prim.stableMemorySize());
+    
+    {
+      icStableMemoryPages = icStableMemoryPages;
+      regionBasedPages = regionBasedPages;
+      dataPages = dataPages;
+      indexPages = indexPages;
+    };
   };
 };
